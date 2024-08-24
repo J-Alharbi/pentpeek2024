@@ -1,172 +1,230 @@
-import datetime
-import random
-
-import altair as alt
-import numpy as np
-import pandas as pd
+import subprocess
+import os
+import requests
+from urllib.parse import urljoin
+from fpdf import FPDF
 import streamlit as st
 
-# Show app title and description.
-st.set_page_config(page_title="Support tickets", page_icon="🎫")
-st.title("🎫 Support tickets")
-st.write(
-    """
-    This app shows how you can build an internal tool in Streamlit. Here, we are 
-    implementing a support ticket workflow. The user can create a ticket, edit 
-    existing tickets, and view some statistics.
-    """
-)
+# Set up Streamlit page
+st.set_page_config(page_title="PentPeek", page_icon="👀")
+st.title("👀 PentPeek")
+st.write("""
+    PentPeek is an advanced tool based on Dynamic Application Security Testing (DAST), 
+    a method that identifies security vulnerabilities in web applications by simulating 
+    real-world attacks. Provide a URL to scan for potential vulnerabilities.
+""")
 
-# Create a random Pandas dataframe with existing tickets.
-if "df" not in st.session_state:
+# Input URL from user
+url = st.text_input("Enter the URL:")
 
-    # Set seed for reproducibility.
-    np.random.seed(42)
+# Directory Traversal Payloads
+payloads = [
+    "../../../../etc/passwd",
+    "../../../etc/passwd",
+    "..%2F..%2F..%2F..%2Fetc%2Fpasswd",
+    "..%2F..%2F..%2F..%2F..%2Fetc%2Fpasswd",
+    "..%2F..%2F..%2F..%2F..%2F..%2Fetc%2Fpasswd",
+    "%2E%2E%2F%2E%2E%2F%2E%2E%2F%2E%2E%2Fetc%2Fpasswd"
+]
 
-    # Make up some fake issue descriptions.
-    issue_descriptions = [
-        "Network connectivity issues in the office",
-        "Software application crashing on startup",
-        "Printer not responding to print commands",
-        "Email server downtime",
-        "Data backup failure",
-        "Login authentication problems",
-        "Website performance degradation",
-        "Security vulnerability identified",
-        "Hardware malfunction in the server room",
-        "Employee unable to access shared files",
-        "Database connection failure",
-        "Mobile application not syncing data",
-        "VoIP phone system issues",
-        "VPN connection problems for remote employees",
-        "System updates causing compatibility issues",
-        "File server running out of storage space",
-        "Intrusion detection system alerts",
-        "Inventory management system errors",
-        "Customer data not loading in CRM",
-        "Collaboration tool not sending notifications",
-    ]
+def check_directory_traversal(url):
+    results = []
+    detected_vulnerabilities = []
 
-    # Generate the dataframe with 100 rows/tickets.
-    data = {
-        "ID": [f"TICKET-{i}" for i in range(1100, 1000, -1)],
-        "Issue": np.random.choice(issue_descriptions, size=100),
-        "Status": np.random.choice(["Open", "In Progress", "Closed"], size=100),
-        "Priority": np.random.choice(["High", "Medium", "Low"], size=100),
-        "Date Submitted": [
-            datetime.date(2023, 6, 1) + datetime.timedelta(days=random.randint(0, 182))
-            for _ in range(100)
-        ],
-    }
-    df = pd.DataFrame(data)
+    for payload in payloads:
+        test_url = urljoin(url, payload)
+        try:
+            response = requests.get(test_url)
+            if "root:x" in response.text or "passwd" in response.text:
+                detected_vulnerabilities.append(f"Directory Traversal vulnerability detected at: {test_url}")
+            # Only add payloads that reveal vulnerabilities
+        except requests.RequestException as e:
+            results.append(f"Error accessing {test_url}: {e}")
 
-    # Save the dataframe in session state (a dictionary-like object that persists across
-    # page runs). This ensures our data is persisted when the app updates.
-    st.session_state.df = df
+    return detected_vulnerabilities
 
+# Initialize the vulnerability_found dictionary
+vulnerability_found = {
+    'sql_injection': False,
+    'xss': False,
+    'directory_traversal': False,
+    'directory_listing': False
+}
 
-# Show a section to add a new ticket.
-st.header("Add a ticket")
+# Vulnerability selection using checkboxes
+sql_injection = st.checkbox("SQL Injection")
+xss = st.checkbox("XSS")
+directory_traversal = st.checkbox("Directory Traversal")
+directory_listing = st.checkbox("Directory Listing")
 
-# We're adding tickets via an `st.form` and some input widgets. If widgets are used
-# in a form, the app will only rerun once the submit button is pressed.
-with st.form("add_ticket_form"):
-    issue = st.text_area("Describe the issue")
-    priority = st.selectbox("Priority", ["High", "Medium", "Low"])
-    submitted = st.form_submit_button("Submit")
+if st.button("Start Scan"):
+    if url:
+        # Prepare report file names
+        sqlmap_report_file = "sqlmap_report.txt"
+        xsstrike_report_file = "xsstrike_report.txt"
+        directory_traversal_report_file = "directory_traversal_report.txt"
+        dirb_report_file = "dirb_report.txt"
+        pdf_file = "vulnerability_report.pdf"
+        
+        try:
+            # Run Directory Traversal Scan
+            if directory_traversal:
+                directory_traversal_results = check_directory_traversal(url)
+                with open(directory_traversal_report_file, "w") as f:
+                    for result in directory_traversal_results:
+                        f.write(result + "\n")
+                if directory_traversal_results:
+                    vulnerability_found['directory_traversal'] = True
 
-if submitted:
-    # Make a dataframe for the new ticket and append it to the dataframe in session
-    # state.
-    recent_ticket_number = int(max(st.session_state.df.ID).split("-")[1])
-    today = datetime.datetime.now().strftime("%m-%d-%Y")
-    df_new = pd.DataFrame(
-        [
-            {
-                "ID": f"TICKET-{recent_ticket_number+1}",
-                "Issue": issue,
-                "Status": "Open",
-                "Priority": priority,
-                "Date Submitted": today,
-            }
-        ]
-    )
+            # Run SQL Injection Scan
+            if sql_injection:
+                sqlmap_command = f"sqlmap -u {url} --batch --flush-session --output-dir=./ --risk=3 --level=5 --dbs | grep -v '\\[INFO\\]'"
+                with open(sqlmap_report_file, "w") as f:
+                    subprocess.run(sqlmap_command, stdout=f, stderr=subprocess.STDOUT, shell=True, text=True)
+                vulnerability_found['sql_injection'] = True
 
-    # Show a little success message.
-    st.write("Ticket submitted! Here are the ticket details:")
-    st.dataframe(df_new, use_container_width=True, hide_index=True)
-    st.session_state.df = pd.concat([df_new, st.session_state.df], axis=0)
+            # Run XSS Scan
+            if xss:
+                xsstrike_command = ["python3", "XSStrike/xsstrike.py", "--url", url]
+                with open(xsstrike_report_file, "w") as f:
+                    subprocess.run(xsstrike_command, stdout=f, stderr=subprocess.STDOUT, text=True)
+                vulnerability_found['xss'] = True  # Assume XSStrike reports vulnerabilities
 
-# Show section to view and edit existing tickets in a table.
-st.header("Existing tickets")
-st.write(f"Number of tickets: `{len(st.session_state.df)}`")
+            # Run Directory Listing Scan (dirb)
+            if directory_listing:
+                dirb_command = ["dirb", url, "-o", dirb_report_file, "-S", "-r", "-s", "200"]
+                with open(dirb_report_file, "w") as f:
+                    process = subprocess.Popen(dirb_command, stdout=subprocess.PIPE, text=True)
+                    for line in process.stdout:
+                        f.write(line)
+                        f.flush()
+                    process.stdout.close()
+                    process.wait()
+                vulnerability_found['directory_listing'] = True  # Assume dirb finds a vulnerability
 
-st.info(
-    "You can edit the tickets by double clicking on a cell. Note how the plots below "
-    "update automatically! You can also sort the table by clicking on the column headers.",
-    icon="✍️",
-)
+            # Generate PDF Report
+            pdf = FPDF()
+            pdf.add_page()
 
-# Show the tickets dataframe with `st.data_editor`. This lets the user edit the table
-# cells. The edited data is returned as a new dataframe.
-edited_df = st.data_editor(
-    st.session_state.df,
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "Status": st.column_config.SelectboxColumn(
-            "Status",
-            help="Ticket status",
-            options=["Open", "In Progress", "Closed"],
-            required=True,
-        ),
-        "Priority": st.column_config.SelectboxColumn(
-            "Priority",
-            help="Priority",
-            options=["High", "Medium", "Low"],
-            required=True,
-        ),
-    },
-    # Disable editing the ID and Date Submitted columns.
-    disabled=["ID", "Date Submitted"],
-)
+            # Set font for the title and add a big heading on the first page
+            pdf.set_font("Arial", "B", 24)
 
-# Show some metrics and charts about the ticket.
-st.header("Statistics")
+            # Calculate page dimensions
+            page_width = pdf.w
+            page_height = pdf.h
 
-# Show metrics side by side using `st.columns` and `st.metric`.
-col1, col2, col3 = st.columns(3)
-num_open_tickets = len(st.session_state.df[st.session_state.df.Status == "Open"])
-col1.metric(label="Number of open tickets", value=num_open_tickets, delta=10)
-col2.metric(label="First response time (hours)", value=5.2, delta=-1.5)
-col3.metric(label="Average resolution time (hours)", value=16, delta=2)
+            # Calculate the position to center the title
+            title = "PentPeek Vulnerability Scanning Report"
+            title_width = pdf.get_string_width(title)
 
-# Show two Altair charts using `st.altair_chart`.
-st.write("")
-st.write("##### Ticket status per month")
-status_plot = (
-    alt.Chart(edited_df)
-    .mark_bar()
-    .encode(
-        x="month(Date Submitted):O",
-        y="count():Q",
-        xOffset="Status:N",
-        color="Status:N",
-    )
-    .configure_legend(
-        orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5
-    )
-)
-st.altair_chart(status_plot, use_container_width=True, theme="streamlit")
+            # Set the position for the title to be centered on the page
+            pdf.set_xy((page_width - title_width) / 2, page_height / 3)
 
-st.write("##### Current ticket priorities")
-priority_plot = (
-    alt.Chart(edited_df)
-    .mark_arc()
-    .encode(theta="count():Q", color="Priority:N")
-    .properties(height=300)
-    .configure_legend(
-        orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5
-    )
-)
-st.altair_chart(priority_plot, use_container_width=True, theme="streamlit")
+            # Add the title
+            pdf.cell(title_width, 10, title, ln=True, align="C")
+
+            # Set font for the vulnerability list
+            pdf.set_font("Arial", size=14)
+            pdf.ln(20)  # Add space between the title and the vulnerabilities
+
+            # Check for found vulnerabilities and print them
+            vulnerability_text = "Vulnerabilities Found:\n"
+            if vulnerability_found['sql_injection']:
+                vulnerability_text += "* SQL Injection\n"
+            if vulnerability_found['xss']:
+                vulnerability_text += "* XSS\n"
+            if vulnerability_found['directory_traversal']:
+                vulnerability_text += "* Directory Traversal\n"
+            if vulnerability_found['directory_listing']:
+                vulnerability_text += "* Directory Listing\n"
+
+            # Add the vulnerabilities list to the first page
+            pdf.multi_cell(0, 10, vulnerability_text)
+
+            # Move to the next page for the detailed reports
+            pdf.add_page()
+            pdf.set_font("Arial", size=12)
+
+            # Conditionally include reports based on user selection
+
+            # Include Directory Traversal Report
+            if vulnerability_found['directory_traversal'] and os.path.exists(directory_traversal_report_file):
+                pdf.multi_cell(0, 10, "Directory Traversal Report")
+                with open(directory_traversal_report_file, "r") as f:
+                    for line in f:
+                        pdf.multi_cell(0, 10, line)
+
+            # Include SQL Injection Report
+            if vulnerability_found['sql_injection'] and os.path.exists(sqlmap_report_file):
+                pdf.add_page()
+                pdf.multi_cell(0, 10, "SQL Injection Report")
+                with open(sqlmap_report_file, "r") as f:
+                    for line in f:
+                        pdf.multi_cell(0, 10, line)
+
+            # Include XSS Report
+            if vulnerability_found['xss'] and os.path.exists(xsstrike_report_file):
+                pdf.add_page()
+                pdf.multi_cell(0, 10, "XSS Report")
+                with open(xsstrike_report_file, "r") as f:
+                    for line in f:
+                        pdf.multi_cell(0, 10, line)
+
+            # Include Directory Listing Report from dirb
+            if vulnerability_found['directory_listing'] and os.path.exists(dirb_report_file):
+                pdf.add_page()
+                pdf.multi_cell(0, 10, "Directory Listing Report")
+                with open(dirb_report_file, "r") as f:
+                    for line in f:
+                        pdf.multi_cell(0, 10, line)
+
+            # Add mitigations section at the end of the report
+            if any(vulnerability_found.values()):
+                pdf.add_page()
+                pdf.set_font("Arial", "B", 16)
+                pdf.cell(0, 10, "Mitigations", ln=True)
+                pdf.set_font("Arial", size=12)
+
+                if vulnerability_found['sql_injection']:
+                    pdf.multi_cell(0, 10, "*SQL Injection:*")
+                    pdf.multi_cell(0, 10, "1. Use prepared statements and parameterized queries.")
+                    pdf.multi_cell(0, 10, "2. Employ stored procedures.")
+                    pdf.multi_cell(0, 10, "3. Implement input validation and sanitization.")
+                    pdf.multi_cell(0, 10, "4. Use ORM frameworks.")
+                if vulnerability_found['xss']:
+                    pdf.multi_cell(0, 10, "*Cross-Site Scripting (XSS):*")
+                    pdf.multi_cell(0, 10, "1. Escape user inputs.")
+                    pdf.multi_cell(0, 10, "2. Use Content Security Policy (CSP).")
+                    pdf.multi_cell(0, 10, "3. Validate and sanitize inputs.")
+                    pdf.multi_cell(0, 10, "4. Implement proper output encoding.")
+                if vulnerability_found['directory_traversal']:
+                    pdf.multi_cell(0, 10, "*Directory Traversal:*")
+                    pdf.multi_cell(0, 10, "1. Validate and sanitize user inputs.")
+                    pdf.multi_cell(0, 10, "2. Use secure APIs for file access.")
+                    pdf.multi_cell(0, 10, "3. Implement file access controls.")
+                    pdf.multi_cell(0, 10, "4. Restrict file uploads and access.")
+                if vulnerability_found['directory_listing']:
+                    pdf.multi_cell(0, 10, "*Directory Listing:*")
+                    pdf.multi_cell(0, 10, "1. Disable directory listing on the web server.")
+                    pdf.multi_cell(0, 10, "2. Use proper access controls.")
+                    pdf.multi_cell(0, 10, "3. Restrict permissions on sensitive directories.")
+
+            
+                # Output the PDF file
+                pdf.output(pdf_file)
+
+                # Provide Download Link
+                with open(pdf_file, "rb") as pdf_file_handle:
+                    st.download_button(
+                        label="Download PDF Report",
+                        data=pdf_file_handle,
+                        file_name="vulnerability_report.pdf",
+                        mime="application/pdf"
+                    )
+
+                st.success("Vulnerability test completed. You can download the report using the button above.")
+            else:
+                st.write("No vulnerabilities found during the scan.")
+
+        except Exception as e:
+            st.error(f"An error occurred during the scan: {e}")
